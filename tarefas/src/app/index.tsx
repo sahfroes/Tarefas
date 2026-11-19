@@ -1,89 +1,245 @@
-import { useCallback, useState } from 'react';
-import { FlatList, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+
+import { useCallback, useMemo, useState } from 'react';
+
+import {
+  Alert,
+  FlatList,
+  Text,
+  View,
+  Pressable,
+} from 'react-native';
+
+import { useFocusEffect, router } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { adicionar, alternar, listar, listarCategorias, remover, type Categoria, type Tarefa } from '../db/db';
-import { s } from '../estilo';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-export default function Tarefas() {
+import {
+  listar,
+  alternar,
+  remover,
+  type Tarefa,
+} from '../db/db';
+
+import BarraPesquisa from '../components/BarraPesquisa';
+import BarraProgresso from '../components/BarraProgresso';
+import CartaoResumo from '../components/CartaoResumo';
+import CartaoTarefa from '../components/CartaoTarefa';
+import BotaoAdicionar from '../components/BotaoAdicionar';
+import ListaVazia from '../components/ListaVazia';
+
+import { cores, s } from '../estilo';
+
+type Filtro = 'Todas' | 'Pendentes' | 'Concluídas';
+
+export default function Index() {
   const db = useSQLiteContext();
-  const [itens, setItens] = useState<Tarefa[]>([]);
-  const [categorias, setCategorias] = useState<Categoria[]>([]);
-  const [texto, setTexto] = useState('');
-  const [categoriaId, setCategoriaId] = useState<number | null>(null);
 
+  const [tarefas, setTarefas] = useState<Tarefa[]>([]);
+  const [pesquisa, setPesquisa] = useState('');
+  const [filtro, setFiltro] = useState<Filtro>('Todas');
+
+  // Carrega as tarefas do banco.
   const carregar = useCallback(async () => {
-    setItens(await listar(db));
-    const cats = await listarCategorias(db);
-    setCategorias(cats);
-    // Se a categoria selecionada foi apagada, volta para "sem categoria".
-    setCategoriaId((atual) => (cats.some((c) => c.id === atual) ? atual : null));
+    try {
+      const dados = await listar(db);
+      setTarefas(dados);
+    } catch {
+      Alert.alert('Erro', 'Não foi possível carregar as tarefas.');
+    }
   }, [db]);
 
-  // As abas ficam montadas; useFocusEffect recarrega toda vez que esta aba ganha foco
-  // (assim uma categoria criada na outra aba aparece aqui).
+  // Atualiza a lista quando a tela recebe foco.
   useFocusEffect(
     useCallback(() => {
       carregar();
-    }, [carregar]),
+    }, [carregar])
   );
 
-  async function salvar() {
-    const titulo = texto.trim();
-    if (!titulo) return;
-    await adicionar(db, titulo, categoriaId);
-    setTexto('');
-    await carregar();
+  // Estatísticas.
+  const concluidas = tarefas.filter(t => t.feita === 1).length;
+  const pendentes = tarefas.length - concluidas;
+
+  // Pesquisa e filtros.
+  const filtradas = useMemo(() => {
+    return tarefas.filter(item => {
+      const termo = pesquisa.trim().toLowerCase();
+
+      const correspondePesquisa =
+        item.titulo.toLowerCase().includes(termo) ||
+        (item.categoria ?? '').toLowerCase().includes(termo);
+
+      const correspondeFiltro =
+        filtro === 'Todas' ||
+        (filtro === 'Pendentes' && item.feita === 0) ||
+        (filtro === 'Concluídas' && item.feita === 1);
+
+      return correspondePesquisa && correspondeFiltro;
+    });
+  }, [tarefas, pesquisa, filtro]);
+
+  // Concluir tarefa.
+  async function concluir(id: number) {
+    try {
+      await alternar(db, id);
+      await carregar();
+    } catch {
+      Alert.alert('Erro', 'Não foi possível atualizar a tarefa.');
+    }
   }
 
-  async function marcar(id: number) {
-    await alternar(db, id);
-    await carregar();
+  // Excluir tarefa.
+  function excluir(id: number) {
+    Alert.alert(
+      'Excluir tarefa',
+      'Deseja realmente excluir esta tarefa?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await remover(db, id);
+              await carregar();
+            } catch {
+              Alert.alert('Erro', 'Não foi possível excluir a tarefa.');
+            }
+          },
+        },
+      ]
+    );
   }
-
-  async function apagar(id: number) {
-    await remover(db, id);
-    await carregar();
-  }
-
-  const opcoes: { id: number | null; nome: string }[] = [{ id: null, nome: 'Sem categoria' }, ...categorias];
 
   return (
-    <View style={s.tela}>
-      <View style={s.linha}>
-        <TextInput style={s.input} value={texto} onChangeText={setTexto} placeholder="Nova tarefa" onSubmitEditing={salvar} />
-        <Pressable style={s.botao} onPress={salvar}>
-          <Text style={s.botaoTxt}>Adicionar</Text>
-        </Pressable>
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.chips}>
-        {opcoes.map((c) => {
-          const ativo = c.id === categoriaId;
-          return (
-            <Pressable key={c.id ?? 'nenhuma'} onPress={() => setCategoriaId(c.id)} style={[s.chip, ativo && s.chipOn]}>
-              <Text style={ativo ? s.chipTxtOn : s.chipTxt}>{c.nome}</Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-
+    <SafeAreaView style={s.tela} edges={['top']}>
       <FlatList
-        data={itens}
-        keyExtractor={(t) => String(t.id)}
-        ListEmptyComponent={<Text style={s.vazio}>Nenhuma tarefa ainda.</Text>}
+        data={filtradas}
+        keyExtractor={item => String(item.id)}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+
+        contentContainerStyle={[
+          s.conteudo,
+          {
+            paddingBottom: 35,
+            flexGrow: 1,
+          },
+        ]}
+
         renderItem={({ item }) => (
-          <View style={s.item}>
-            <Pressable style={s.itemTexto} onPress={() => marcar(item.id)}>
-              <Text style={[s.texto, item.feita === 1 && s.feita]}>{item.titulo}</Text>
-              {item.categoria && <Text style={s.pequeno}>{item.categoria}</Text>}
-            </Pressable>
-            <Pressable onPress={() => apagar(item.id)}>
-              <Text style={s.apagar}>Excluir</Text>
-            </Pressable>
-          </View>
+          <CartaoTarefa
+            item={item}
+            aoConcluir={() => concluir(item.id)}
+            aoEditar={() => router.push(`/item/${item.id}`)}
+            aoExcluir={() => excluir(item.id)}
+          />
         )}
+
+        ListHeaderComponent={
+          <View>
+            <Text style={s.pequeno}>
+              BEM-VINDA! ✨
+            </Text>
+
+            <Text style={s.titulo}>
+              Minhas tarefas
+            </Text>
+
+            <Text style={s.subtitulo}>
+              Organize seu dia com facilidade.
+            </Text>
+
+            {/* Estatísticas */}
+            <View style={{
+              flexDirection: 'row',
+              gap: 8,
+              marginTop: 20,
+            }}>
+              <CartaoResumo
+                titulo="Total"
+                valor={tarefas.length}
+                cor={cores.roxo}
+              />
+
+              <CartaoResumo
+                titulo="Concluídas"
+                valor={concluidas}
+                cor={cores.azul}
+              />
+
+              <CartaoResumo
+                titulo="Pendentes"
+                valor={pendentes}
+                cor={cores.amarelo}
+              />
+            </View>
+
+            {/* Progresso */}
+            <BarraProgresso
+              total={tarefas.length}
+              concluidas={concluidas}
+            />
+
+            {/* Adicionar tarefa */}
+            <BotaoAdicionar
+              aoPressionar={() => router.push('/item/novo')}
+            />
+
+            <Text style={[
+              s.titulo,
+              {
+                fontSize: 18,
+                marginTop: 15,
+                marginBottom: 12,
+              },
+            ]}>
+              Minha lista
+            </Text>
+
+            {/* Pesquisa */}
+            <BarraPesquisa
+              valor={pesquisa}
+              aoMudar={setPesquisa}
+            />
+
+            {/* Filtros */}
+            <View style={{
+              flexDirection: 'row',
+              gap: 8,
+              marginBottom: 18,
+              marginTop: 10,
+            }}>
+              {(['Todas', 'Pendentes', 'Concluídas'] as Filtro[]).map(opcao => (
+                <Pressable
+                  key={opcao}
+                  onPress={() => setFiltro(opcao)}
+                  style={{
+                    backgroundColor:
+                      filtro === opcao ? cores.roxo : cores.branco,
+                    paddingHorizontal: 14,
+                    paddingVertical: 11,
+                    borderRadius: 20,
+                    borderWidth: 1,
+                    borderColor:
+                      filtro === opcao ? cores.roxo : cores.borda,
+                  }}
+                >
+                  <Text style={{
+                    color:
+                      filtro === opcao ? cores.branco : cores.texto,
+                    fontSize: 12,
+                    fontWeight: '700',
+                  }}>
+                    {opcao}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        }
+
+        ListEmptyComponent={<ListaVazia />}
       />
-    </View>
+    </SafeAreaView>
   );
 }
